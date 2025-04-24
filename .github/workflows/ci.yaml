@@ -82,7 +82,13 @@ jobs:
 
       - name: Terraform Plan
         shell: bash
-        run: terraform plan
+        run: |
+          set -eux
+          terraform plan \
+            -var 'repository_name=${{ inputs.ecr_repo_name }}' \
+            -var 'lifecycle_policy=${{ inputs.lifecycle_policy_file }}' \
+            -var 'iam_role=arn:aws:iam::${{ inputs.aws_account_id }}:role/${{ inputs.backend_iam_role }}' \
+            -var 'aws_account_id=${{ inputs.aws_account_id }}' \
         working-directory: './terraform'
 
       - name: Create ECR repo [TF apply]
