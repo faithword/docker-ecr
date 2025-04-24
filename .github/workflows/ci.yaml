@@ -78,12 +78,12 @@ jobs:
             -backend-config='region=${{ inputs.aws_region }}' \
             -backend-config='bucket=${{ inputs.backend_s3_bucket }}' \
             -backend-config='key=docker-ecr/terraform-${{ inputs.ecr_repo_name }}.tfstate'
-        working-directory: '${{ github.action_path }}/terraform'
+        working-directory: './terraform'
 
       - name: Terraform Plan
         shell: bash
         run: terraform plan
-        working-directory: '${{ github.action_path }}/terraform'
+        working-directory: './terraform'
 
       - name: Create ECR repo [TF apply]
         shell: bash
@@ -95,7 +95,7 @@ jobs:
             -var 'iam_role=arn:aws:iam::${{ inputs.aws_account_id }}:role/${{ inputs.backend_iam_role }}' \
             -var 'aws_account_id=${{ inputs.aws_account_id }}' \
             -auto-approve
-        working-directory: '${{ github.action_path }}/terraform'
+        working-directory: './terraform'
 
       - name: Login to Amazon ECR
         id: login-ecr
