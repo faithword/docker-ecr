@@ -1,0 +1,118 @@
+name: Docker image build and publish
+on:
+  workflow_dispatch:
+    inputs:
+      path_to_dockerfile:
+        description: Path to the dockerfile (default = 'Dockerfile')
+        default: 'Dockerfile'
+        type: string
+      docker_build_dir:
+        description: Docker build directory (default = '.')
+        default: '.'
+        type: string
+      image_tag:
+        description: Tag to apply to images.
+        type: string
+        default: snapshot-artifact
+      lifecycle_policy_file:
+        description: Path to the lifecycle policy JSON file (default = 'policy.json')
+        default: 'policies/ecr-policy.json'
+        type: string
+      backend_s3_bucket:
+        description: Name of the S3bucket for Terraform backend
+        default: 'argocd-pg-tf-bucket'
+        type: string
+      backend_iam_role:
+        description: Name of the Terraform backend assumable IAM Role
+        default: 'tehila-dev'
+        type: string
+      aws_account_id:
+        description: AWS Account ID
+        default: '845091769606'
+        type: string
+      aws_region:
+        description: Target AWS Region
+        default: 'eu-west-2'
+        type: string
+      ecr_repo_name:
+        description: ECR repository name
+        default: 'tehila_dev_ecr'
+        type: string
+
+# concurrency required to avoid terraform lock contention during ECR provisioning
+concurrency: ci-${{ github.repository }}-docker-pipeline
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+
+    outputs:
+      image_tag: ${{ steps.build-publish.outputs.image_tag }}
+      full_image: ${{ steps.build-publish.outputs.full_image }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.11.4
+          terraform_wrapper: false
+
+      - name: TF init
+        shell: bash
+        run: |
+          set -eux
+          terraform init -upgrade -reconfigure \
+            -backend-config='skip_metadata_api_check=true' \
+            -backend-config='skip_region_validation=true' \
+            -backend-config='skip_credentials_validation=true' \
+            -backend-config='region=${{ inputs.aws_region }}' \
+            -backend-config='bucket=${{ inputs.backend_s3_bucket }}' \
+            -backend-config='key=docker-ecr/terraform-${{ inputs.ecr_repo_name }}.tfstate'
+        working-directory: '${{ github.action_path }}/terraform'
+
+      - name: Terraform Plan
+        shell: bash
+        run: terraform plan
+        working-directory: '${{ github.action_path }}/terraform'
+
+      - name: Create ECR repo [TF apply]
+        shell: bash
+        run: |
+          set -eux
+          terraform apply \
+            -var 'repository_name=${{ inputs.ecr_repo_name }}' \
+            -var 'lifecycle_policy=${{ inputs.lifecycle_policy_file }}' \
+            -var 'iam_role=arn:aws:iam::${{ inputs.aws_account_id }}:role/${{ inputs.backend_iam_role }}' \
+            -var 'aws_account_id=${{ inputs.aws_account_id }}' \
+            -auto-approve
+        working-directory: '${{ github.action_path }}/terraform'
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ inputs.aws_account_id }}
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-publish
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.ecr_repo_name }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          docker build "${{ inputs.docker_build_dir }}" -f "${{ inputs.path_to_dockerfile }}" -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "IMAGE $IMAGE_TAG is pushed to $ECR_REGISTRY/$ECR_REPOSITORY"
+          echo "image_tag=$IMAGE_TAG"
+          echo "full_image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
